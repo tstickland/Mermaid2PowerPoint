@@ -70,10 +70,23 @@ const LINE_KEYWORDS = new Set(
   ).split(" ")
 );
 
-function lowerFirstKeyword(line: string): string {
-  return line.replace(/^(\s*)([A-Z])([\w-]*)/, (whole, indent: string, first: string, rest: string) => {
+const LINE_START_WORD = /^(\s*)([A-Z])([\w-]*)/;
+
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Lowercases a line's first word if that gives a Mermaid keyword, unless the word also appears
+ * elsewhere in the source: then it is likely a name the user chose (a node called "Text" used as
+ * "Text --> B" and "A --> Text"), and changing one occurrence would split it in two.
+ */
+function lowerFirstKeyword(line: string, source: string): string {
+  return line.replace(LINE_START_WORD, (whole, indent: string, first: string, rest: string) => {
     const word = first.toLowerCase() + rest;
-    return LINE_KEYWORDS.has(word) ? indent + word : whole;
+    if (!LINE_KEYWORDS.has(word)) return whole;
+    const original = first + rest;
+    const everywhere = source.match(new RegExp(`(?<![\\w-])${escapeRegExp(original)}(?![\\w-])`, "g"))?.length ?? 0;
+    const atLineStart = source.split("\n").filter((l) => l.match(LINE_START_WORD)?.slice(2, 4).join("") === original).length;
+    return everywhere > atLineStart ? whole : indent + word;
   });
 }
 
@@ -86,7 +99,7 @@ export function capitalizationRepairs(source: string): string[] {
   const firstIndex = lines.findIndex((l) => l.trim() && !l.trim().startsWith("%%"));
   if (firstIndex === -1) return [];
   const firstOnly = [...lines];
-  firstOnly[firstIndex] = lowerFirstKeyword(lines[firstIndex]);
-  const all = lines.map(lowerFirstKeyword);
+  firstOnly[firstIndex] = lowerFirstKeyword(lines[firstIndex], source);
+  const all = lines.map((l) => lowerFirstKeyword(l, source));
   return [...new Set([firstOnly.join("\n"), all.join("\n")])].filter((s) => s !== source);
 }

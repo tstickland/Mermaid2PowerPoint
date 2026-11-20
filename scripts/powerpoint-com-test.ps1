@@ -16,6 +16,8 @@ $before = @(Get-Process POWERPNT -ErrorAction SilentlyContinue | ForEach-Object 
 
 $job = Start-Job -ArgumentList $OutDir, ($before.Count -gt 0) -ScriptBlock {
   param($OutDir, $wasRunning)
+  # Any error (a COM call that throws, a missing file) ends the job, which the caller reports.
+  $ErrorActionPreference = "Stop"
   $failures = 0
   $tag = "MERMAID_DIAGRAM"
   $placements = Get-Content -Raw "$OutDir\placements.json" | ConvertFrom-Json
@@ -99,7 +101,9 @@ if (-not (Wait-Job $job -Timeout $TimeoutSeconds)) {
   Receive-Job $job | Write-Host
   exit 1
 }
-$output = Receive-Job $job
+$jobState = $job.State
+$jobErrors = @()
+$output = Receive-Job $job -ErrorVariable jobErrors -ErrorAction SilentlyContinue
 Remove-Job $job
 # Quit() can leave a windowless POWERPNT behind; stop it only if this script started it.
 if (-not $before.Count) {
@@ -107,6 +111,14 @@ if (-not $before.Count) {
   Get-Process POWERPNT -ErrorAction SilentlyContinue | Where-Object { $before -notcontains $_.Id -and $_.MainWindowHandle -eq 0 } | Stop-Process -Force
 }
 $output | Where-Object { $_ -notlike "FAILURES=*" } | Write-Host
-$failures = [int](($output | Where-Object { $_ -like "FAILURES=*" }) -replace "FAILURES=", "")
+$summary = $output | Where-Object { $_ -like "FAILURES=*" } | Select-Object -Last 1
+# A job that threw (missing placements.json, a failed AddPicture, no PowerPoint) never prints
+# FAILURES=; treat that as a failure rather than as zero problems.
+if ($jobState -ne "Completed" -or -not $summary) {
+  $jobErrors | ForEach-Object { Write-Host "ERROR: $_" }
+  Write-Host "The test did not finish (job state: $jobState)."
+  exit 1
+}
+$failures = [int]($summary -replace "FAILURES=", "")
 Write-Host "$failures problem(s)"
 exit $failures

@@ -20,6 +20,9 @@ The COM test checks rendering and storage only. The Office.js layer (`src/powerp
 
 Render pipeline: `mermaidRenderer.ts` → `svgSanitize.ts` (→ `rasterize.ts` for PNG-only) → `powerpoint/diagrams.ts`. The task pane (`taskpane.ts`) only wires UI to `powerpoint/diagrams.ts`.
 
+- **PNG only when needed**: `renderDiagram(..., { png })` skips `rasterize.ts` unless PNG-only mode or no `ImageCoercion 1.2` (`needsPng` in `diagrams.ts`); the harness keeps the default (`png: true`). `rasterize` caps each canvas side at 16384 px and throws on an empty `toDataURL`.
+- **Previews**: `renderPreview` skips a queued preview that a newer one superseded (`SupersededError`), so typing can't queue renders ahead of Insert. While an action runs, the task pane's `busy` flag stops selection-change checks from re-enabling **Update selected**.
+
 - **Rendering happens in an off-screen stage div**, `#mermaid-stage`. It must stay laid out: do **not** use `visibility:hidden` or `display:none`, because the sanitizer measures text with `getBoundingClientRect`. Mermaid calls are serialized through a promise queue because Mermaid holds global config.
 - **`svgSanitize.ts` works around Office's limited SVG renderer** (same renderer as Word): CSS resolved to presentation attributes, `<foreignObject>` converted to `<text>`, `dominant-baseline` emulated, filters removed (Office drops filtered elements), newlines in `<text>` normalized.
 - **Inserting pictures**: PowerPointApi has no add-picture method, so `placeDiagram` uses the Common API `setSelectedDataAsync` with `CoercionType.XmlSvg` (PowerPoint makes its own PNG fallback), or `Image` for PNG-only. It inserts on the *current* slide, so `placeDiagram` first selects the target slide (`setSelectedSlides`) and clears the shape selection. The new shape is found by diffing the slide's shape IDs before and after (retried briefly). `imageLeft`/`imageTop` are always passed: without them PowerPoint would put the picture into a placeholder.
@@ -28,7 +31,7 @@ Render pipeline: `mermaidRenderer.ts` → `svgSanitize.ts` (→ `rasterize.ts` f
 - **Insert placement** (`freeArea`): an empty Body/Content placeholder is used and then deleted. Otherwise the area is below a Title placeholder in the top half, or the slide minus a 5% margin. Placeholder types need 1.8, and the slide size needs 1.10 (else 960×540 pt is assumed).
 - **Convert code blocks**: a text box (TextBox/Placeholder/GeometricShape) whose text holds a ```` ```mermaid ```` block. Text boxes with other text are reported, not converted. `normalizeTypedText` maps AutoCorrect characters (smart quotes, dashes, `→ ← ⇒ ⇐ ⇔`). If Mermaid rejects the source, `capitalizationRepairs` retries with PowerPoint's auto-capitalized first words lowercased: first the diagram-type line only, then every line, and only for known keywords. The diagram is fitted into the text box's bounds.
 - Requirement sets: 1.5 is required (checked in `Office.onReady`); 1.8 and 1.10 features are used when `isSetSupported` says so, each guarded with try/catch so a failure there never blocks the insert.
-- ZenUML is registered via `registerExternalDiagrams`. The `logos` icon pack is bundled and lazy-loaded; other Iconify sets are fetched per icon (`iconPacks.ts`), so `test:render` needs internet for `architecture-icons`.
+- ZenUML is registered via `registerExternalDiagrams`. The `logos` icon pack is bundled and lazy-loaded; other Iconify sets are fetched per icon (`iconPacks.ts`), so `test:render` needs internet for `architecture-icons`. Icon references are `service|group id(prefix:name)` (Architecture) and `icon: "prefix:name"`; plain `(word:word)` label text is not sent. After the API is unreachable, fetches pause for 60 s.
 
 ## Gotchas
 

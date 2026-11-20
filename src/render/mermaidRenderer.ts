@@ -61,7 +61,7 @@ export async function validate(source: string, options: DiagramOptions): Promise
   await mermaid.parse(source);
 }
 
-async function renderNow(source: string, options: DiagramOptions): Promise<RenderResult> {
+async function renderNow(source: string, options: DiagramOptions, png: boolean): Promise<RenderResult> {
   await setup();
   configure(options);
   await mermaid.parse(source);
@@ -79,7 +79,7 @@ async function renderNow(source: string, options: DiagramOptions): Promise<Rende
     if (!svgEl) throw new Error("Mermaid did not return an SVG.");
 
     const sanitized = sanitizeSvg(svgEl, options.background);
-    const pngBase64 = await rasterize(sanitized, options.scale, options.background);
+    const pngBase64 = png || options.pngOnly ? await rasterize(sanitized, options.scale, options.background) : "";
     return {
       svg: options.pngOnly ? null : sanitized.markup,
       pngBase64,
@@ -91,16 +91,41 @@ async function renderNow(source: string, options: DiagramOptions): Promise<Rende
   }
 }
 
+export interface RenderDiagramOptions {
+  /** Build the PNG (default true). Always built in PNG-only mode. When false, `pngBase64` is "". */
+  png?: boolean;
+}
+
 /** Renders Mermaid source. Calls are serialized because Mermaid keeps global state. */
-export function renderDiagram(source: string, options: DiagramOptions): Promise<RenderResult> {
-  const job = queue.then(() => renderNow(source, options));
+export function renderDiagram(
+  source: string,
+  options: DiagramOptions,
+  { png = true }: RenderDiagramOptions = {}
+): Promise<RenderResult> {
+  const job = queue.then(() => renderNow(source, options, png));
   queue = job.catch(() => undefined);
   return job;
 }
 
-/** Renders for on-screen preview only (no sanitizing or rasterizing). */
+/** Thrown for a preview that a newer preview made obsolete before it started. */
+export class SupersededError extends Error {
+  constructor() {
+    super("Superseded by a newer preview.");
+    this.name = "SupersededError";
+  }
+}
+
+let previewGeneration = 0;
+
+/**
+ * Renders for on-screen preview only (no sanitizing or rasterizing). A preview still waiting in
+ * the queue when a newer one is requested is skipped (rejects with SupersededError), so typing
+ * can't pile up renders in front of Insert.
+ */
 export function renderPreview(source: string, options: DiagramOptions): Promise<string> {
+  const generation = ++previewGeneration;
   const job = queue.then(async () => {
+    if (generation !== previewGeneration) throw new SupersededError();
     await setup();
     configure(options);
     await mermaid.parse(source);

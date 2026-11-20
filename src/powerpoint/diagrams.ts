@@ -51,8 +51,13 @@ function boxOf(shape: PowerPoint.Shape): Box {
 
 // ---- Rendering ---------------------------------------------------------------
 
+/** SVG goes in as-is (PowerPoint makes its own fallback), so a PNG is only needed without SVG. */
+function needsPng(options: DiagramOptions): boolean {
+  return options.pngOnly || !Office.context.requirements.isSetSupported("ImageCoercion", "1.2");
+}
+
 async function render(source: string, options: DiagramOptions): Promise<Rendered> {
-  const result = await renderDiagram(source, options);
+  const result = await renderDiagram(source, options, { png: needsPng(options) });
   return {
     result,
     meta: encodeMeta(source, options, { width: result.width, height: result.height }),
@@ -238,6 +243,7 @@ function setSelectedData(data: string, options: Office.SetSelectedDataOptions): 
 /** Inserts the picture on the current slide: SVG (PowerPoint adds its own PNG fallback), or PNG. */
 function insertPicture(result: RenderResult, box: Box): Promise<void> {
   const svg = !!result.svg && Office.context.requirements.isSetSupported("ImageCoercion", "1.2");
+  if (!svg && !result.pngBase64) throw new Error("No PNG was rendered for this diagram.");
   return setSelectedData(svg ? result.svg! : result.pngBase64, {
     coercionType: svg ? Office.CoercionType.XmlSvg : Office.CoercionType.Image,
     imageLeft: box.left,
@@ -303,8 +309,12 @@ async function placeDiagram(slideId: string, box: Box, rendered: Rendered, repla
     await context.sync();
 
     if (shapesAbove > 0) {
-      for (let i = 0; i < shapesAbove; i++) added.setZOrder("SendBackward");
-      await context.sync();
+      try {
+        for (let i = 0; i < shapesAbove; i++) added.setZOrder("SendBackward");
+        await context.sync();
+      } catch {
+        // The diagram is already in place, just on top of the stack.
+      }
     }
     if (supports("1.10")) {
       try {

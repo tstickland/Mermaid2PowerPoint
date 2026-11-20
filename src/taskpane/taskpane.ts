@@ -1,6 +1,6 @@
 /* global Office */
 import { DEFAULT_OPTIONS, DiagramOptions, MermaidTheme } from "../options";
-import { renderPreview } from "../render/mermaidRenderer";
+import { renderPreview, SupersededError } from "../render/mermaidRenderer";
 import { TEMPLATES } from "../templates";
 import {
   BatchResult,
@@ -123,7 +123,7 @@ async function updatePreview() {
     ui.preview.classList.toggle("dark-theme", options.theme === "dark" && options.background === "transparent");
     ui.error.hidden = true;
   } catch (err) {
-    if (token !== previewToken) return;
+    if (token !== previewToken || err instanceof SupersededError) return;
     ui.error.textContent = errorMessage(err);
     ui.error.hidden = false;
   }
@@ -131,9 +131,16 @@ async function updatePreview() {
 
 // ---- Actions -------------------------------------------------------------
 
-async function runAction(button: HTMLButtonElement, busyText: string, action: () => Promise<string | void>) {
+/**
+ * True while an action runs. Actions change the selection (each placed diagram is selected),
+ * so selection checks must not re-enable buttons until the action has finished.
+ */
+let busy = false;
+
+async function runAction(busyText: string, action: () => Promise<string | void>) {
+  if (busy) return;
+  busy = true;
   const buttons = [ui.insert, ui.update, ui.load, ui.convert, ui.refresh];
-  const previousDisabled = buttons.map((b) => b.disabled);
   buttons.forEach((b) => (b.disabled = true));
   setStatus(busyText);
   try {
@@ -142,7 +149,9 @@ async function runAction(button: HTMLButtonElement, busyText: string, action: ()
   } catch (err) {
     setStatus(errorMessage(err), true);
   } finally {
-    buttons.forEach((b, i) => (b.disabled = previousDisabled[i]));
+    busy = false;
+    [ui.insert, ui.load, ui.convert, ui.refresh].forEach((b) => (b.disabled = false));
+    // Update's state depends on the selection, which the action may have changed.
     void checkSelection();
   }
 }
@@ -150,12 +159,14 @@ async function runAction(button: HTMLButtonElement, busyText: string, action: ()
 let selectionTimer: number | undefined;
 
 async function checkSelection() {
+  if (busy) return;
   try {
     const data = await getSelectedDiagram();
+    if (busy) return;
     ui.update.disabled = !data;
     ui.update.title = data ? "Re-render the selected diagram with the code above" : "Select a Mermaid diagram first";
   } catch {
-    ui.update.disabled = true;
+    if (!busy) ui.update.disabled = true;
   }
 }
 
@@ -199,21 +210,21 @@ function wireEvents() {
   }
 
   ui.insert.addEventListener("click", () =>
-    runAction(ui.insert, "Rendering…", async () => {
+    runAction("Rendering…", async () => {
       await insertDiagram(ui.source.value, readOptions());
       return "Diagram inserted.";
     })
   );
 
   ui.update.addEventListener("click", () =>
-    runAction(ui.update, "Updating…", async () => {
+    runAction("Updating…", async () => {
       const updated = await updateSelectedDiagram(ui.source.value, readOptions());
       return updated ? "Diagram updated." : "Select a Mermaid diagram on a slide first.";
     })
   );
 
   ui.load.addEventListener("click", () =>
-    runAction(ui.load, "Reading selection…", async () => {
+    runAction("Reading selection…", async () => {
       const data = await getSelectedDiagram();
       if (!data) return "No Mermaid diagram is selected. Click a diagram inserted by this add-in.";
       ui.source.value = data.source;
@@ -225,7 +236,7 @@ function wireEvents() {
   );
 
   ui.convert.addEventListener("click", () =>
-    runAction(ui.convert, "Converting code blocks…", async () => {
+    runAction("Converting code blocks…", async () => {
       const result = await convertCodeBlocks(readOptions());
       if (!result.converted && !result.failures.length) {
         return "No ```mermaid blocks found. In a text box, put ```mermaid on the first line, the code below it, then ``` on the last line.";
@@ -235,7 +246,7 @@ function wireEvents() {
   );
 
   ui.refresh.addEventListener("click", () =>
-    runAction(ui.refresh, "Re-rendering all diagrams…", async () => {
+    runAction("Re-rendering all diagrams…", async () => {
       const result = await refreshAllDiagrams(readOptions());
       if (!result.converted && !result.failures.length) return "No Mermaid diagrams found in the presentation.";
       return describeBatch(result, "Re-rendered") + "\n(Current options were applied to every diagram.)";

@@ -7,6 +7,7 @@ import { decodeMeta, encodeMeta } from "../powerpoint/sourceMeta";
 import { capitalizationRepairs, findShapeCodeBlock } from "../powerpoint/codeBlocks";
 import { DEFAULT_SLIDE, fitInto, pxToPt, rescale, slideArea } from "../powerpoint/layout";
 import { findIconRefs } from "../render/iconPacks";
+import { rasterize } from "../render/rasterize";
 
 interface HarnessResult {
   id: string;
@@ -95,12 +96,28 @@ async function selfTest(): Promise<string[]> {
   check(capitalizationRepairs("SequenceDiagram\nParticipant Alice")[1] === "sequenceDiagram\nparticipant Alice", "repair sequence");
   check(capitalizationRepairs("C4Context\n  Person(a, \"A\")").length === 0, "C4 keywords untouched");
   check(capitalizationRepairs("flowchart TD\n  A --> B").length === 0, "nothing to repair");
+  // A keyword-like node name used elsewhere ("Text") keeps its capital.
+  const named = capitalizationRepairs("Flowchart LR\nSubgraph S\nText --> B\nend\nA --> Text");
+  check(named[1] === "flowchart LR\nsubgraph S\nText --> B\nend\nA --> Text", `repair keeps node names: ${named[1]}`);
+  const repeated = capitalizationRepairs("SequenceDiagram\nParticipant A\nParticipant B");
+  check(repeated[1] === "sequenceDiagram\nparticipant A\nparticipant B", `repair repeated keyword: ${repeated[1]}`);
 
   // The repaired source actually renders.
   try {
     await renderDiagram(capitalizationRepairs("Flowchart LR\n  A --> B")[0], DEFAULT_OPTIONS);
   } catch (err) {
     failures.push(`repaired source renders: ${err}`);
+  }
+
+  // A very wide diagram at 2x would need a 140000 px canvas, past browser limits even though its
+  // area is under MAX_PIXELS; the side cap keeps the PNG valid.
+  try {
+    const wide = { width: 70000, height: 100 };
+    const markup = `<svg xmlns="http://www.w3.org/2000/svg" width="${wide.width}" height="${wide.height}"><rect width="100%" height="100%" fill="#c43e1c"/></svg>`;
+    const png = await rasterize({ markup, ...wide }, 2, "white");
+    check(png.length > 100, `wide PNG is empty (${png.length} chars)`);
+  } catch (err) {
+    failures.push(`wide PNG: ${err}`);
   }
 
   // Layout.
@@ -123,11 +140,14 @@ async function selfTest(): Promise<string[]> {
 
   // Iconify icon references (bundled "logos" and built-in names are skipped).
   const refs = findIconRefs(
-    'architecture-beta\n  service a(mdi:database)[A]\n  service b(logos:aws)[B]\n  service c(cloud)[C]\n' +
+    'architecture-beta\n  group g(mdi:cloud)[G]\n  service a(mdi:database)[A] in g\n  service b(logos:aws)[B]\n  service c(cloud)[C]\n' +
       '  X@{ icon: "fa6-solid:user" }\n  style X stroke-width:4px'
   );
   const refList = JSON.stringify([...refs].map(([prefix, names]) => [prefix, [...names]]));
-  check(refList === '[["mdi",["database"]],["fa6-solid",["user"]]]', `icon refs: ${refList}`);
+  check(refList === '[["mdi",["cloud","database"]],["fa6-solid",["user"]]]', `icon refs: ${refList}`);
+  // Parenthesized label text isn't an icon reference.
+  const labels = findIconRefs("flowchart LR\n  A(phase:design) --> B(team:payments)");
+  check(labels.size === 0, `label text sent as icons: ${JSON.stringify([...labels.keys()])}`);
   return failures;
 }
 
